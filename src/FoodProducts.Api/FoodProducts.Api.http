@@ -1,0 +1,43 @@
+@FoodProducts.Api_HostAddress = http://localhost:5100
+
+GET {{FoodProducts.Api_HostAddress}}/api/food-products
+Accept: application/json
+
+###
+
+GET {{FoodProducts.Api_HostAddress}}/api/food-products/1
+Accept: application/json
+
+###
+
+POST {{FoodProducts.Api_HostAddress}}/api/food-products
+Content-Type: application/json
+
+{
+  "name": "Frozen Margherita Pizza",
+  "description": "Stone-baked crust with mozzarella and basil.",
+  "category": "Frozen Meals",
+  "price": 7.99,
+  "caloriesPerServing": 280,
+  "isActive": true
+}
+
+###
+
+PUT {{FoodProducts.Api_HostAddress}}/api/food-products/1
+Content-Type: application/json
+
+{
+  "name": "Frozen Margherita Pizza",
+  "description": "Stone-baked crust with fresh mozzarella and basil.",
+  "category": "Frozen Meals",
+  "price": 8.49,
+  "caloriesPerServing": 280,
+  "isActive": true
+}
+
+###
+
+DELETE {{FoodProducts.Api_HostAddress}}/api/food-products/1
+
+###
