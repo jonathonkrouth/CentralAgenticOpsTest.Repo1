@@ -1,6 +1,6 @@
 using System.Data;
-using System.Data.Common;
 using System.Globalization;
+using Dapper;
 using FoodProducts.Application.Abstractions;
 using FoodProducts.Application.Domain;
 using FoodProducts.Infrastructure.Data;
@@ -38,29 +38,28 @@ public sealed class FoodProductRepository(IDbConnectionFactory connectionFactory
     {
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = SelectSql + " ORDER BY Name;";
 
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        var foodProducts = new List<FoodProduct>();
-        while (await reader.ReadAsync(cancellationToken))
-        {
-            foodProducts.Add(Map(reader));
-        }
+        var rows = await connection.QueryAsync<FoodProductRow>(new CommandDefinition(
+            SelectSql + " ORDER BY Name;",
+            cancellationToken: cancellationToken));
 
-        return foodProducts;
+        return rows.Select(row => row.ToFoodProduct()).ToList();
     }
 
     public async Task<FoodProduct?> GetByIdAsync(int id, CancellationToken cancellationToken = default)
     {
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = SelectSql + " WHERE Id = @Id;";
-        AddParameter(command, "@Id", DbType.Int32, id);
 
-        await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SingleRow, cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? Map(reader) : null;
+        var parameters = new DynamicParameters();
+        AddParameter(parameters, "@Id", DbType.Int32, id);
+
+        var row = await connection.QueryFirstOrDefaultAsync<FoodProductRow>(new CommandDefinition(
+            SelectSql + " WHERE Id = @Id;",
+            parameters,
+            cancellationToken: cancellationToken));
+
+        return row?.ToFoodProduct();
     }
 
     public async Task<int> CreateAsync(FoodProduct foodProduct, CancellationToken cancellationToken = default)
@@ -69,12 +68,16 @@ public sealed class FoodProductRepository(IDbConnectionFactory connectionFactory
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = InsertSql;
-        AddWritableParameters(command, foodProduct);
-        AddParameter(command, "@CreatedAt", DbType.DateTimeOffset, foodProduct.CreatedAt);
 
-        var newId = await command.ExecuteScalarAsync(cancellationToken);
+        var parameters = new DynamicParameters();
+        AddWritableParameters(parameters, foodProduct);
+        AddParameter(parameters, "@CreatedAt", DbType.DateTimeOffset, foodProduct.CreatedAt);
+
+        var newId = await connection.ExecuteScalarAsync<object?>(new CommandDefinition(
+            InsertSql,
+            parameters,
+            cancellationToken: cancellationToken));
+
         return Convert.ToInt32(newId, CultureInfo.InvariantCulture);
     }
 
@@ -84,60 +87,80 @@ public sealed class FoodProductRepository(IDbConnectionFactory connectionFactory
 
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = UpdateSql;
-        AddParameter(command, "@Id", DbType.Int32, foodProduct.Id);
-        AddWritableParameters(command, foodProduct);
 
-        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        var parameters = new DynamicParameters();
+        AddParameter(parameters, "@Id", DbType.Int32, foodProduct.Id);
+        AddWritableParameters(parameters, foodProduct);
+
+        var rowsAffected = await connection.ExecuteAsync(new CommandDefinition(
+            UpdateSql,
+            parameters,
+            cancellationToken: cancellationToken));
+
+        return rowsAffected > 0;
     }
 
     public async Task<bool> DeleteAsync(int id, CancellationToken cancellationToken = default)
     {
         await using var connection = connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-        await using var command = connection.CreateCommand();
-        command.CommandText = DeleteSql;
-        AddParameter(command, "@Id", DbType.Int32, id);
 
-        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        var parameters = new DynamicParameters();
+        AddParameter(parameters, "@Id", DbType.Int32, id);
+
+        var rowsAffected = await connection.ExecuteAsync(new CommandDefinition(
+            DeleteSql,
+            parameters,
+            cancellationToken: cancellationToken));
+
+        return rowsAffected > 0;
     }
 
-    private static void AddWritableParameters(DbCommand command, FoodProduct foodProduct)
+    private static void AddWritableParameters(DynamicParameters parameters, FoodProduct foodProduct)
     {
-        AddParameter(command, "@Name", DbType.String, foodProduct.Name);
-        AddParameter(command, "@Description", DbType.String, foodProduct.Description);
-        AddParameter(command, "@Category", DbType.String, foodProduct.Category);
-        AddParameter(command, "@Price", DbType.Decimal, foodProduct.Price);
-        AddParameter(command, "@CaloriesPerServing", DbType.Int32, foodProduct.CaloriesPerServing);
-        AddParameter(command, "@IsActive", DbType.Boolean, foodProduct.IsActive);
-        AddParameter(command, "@UpdatedAt", DbType.DateTimeOffset, foodProduct.UpdatedAt);
+        AddParameter(parameters, "@Name", DbType.String, foodProduct.Name);
+        AddParameter(parameters, "@Description", DbType.String, foodProduct.Description);
+        AddParameter(parameters, "@Category", DbType.String, foodProduct.Category);
+        AddParameter(parameters, "@Price", DbType.Decimal, foodProduct.Price);
+        AddParameter(parameters, "@CaloriesPerServing", DbType.Int32, foodProduct.CaloriesPerServing);
+        AddParameter(parameters, "@IsActive", DbType.Boolean, foodProduct.IsActive);
+        AddParameter(parameters, "@UpdatedAt", DbType.DateTimeOffset, foodProduct.UpdatedAt);
     }
 
-    private static void AddParameter(DbCommand command, string name, DbType dbType, object? value)
-    {
-        var parameter = command.CreateParameter();
-        parameter.ParameterName = name;
-        parameter.DbType = dbType;
-        parameter.Value = value ?? DBNull.Value;
-        command.Parameters.Add(parameter);
-    }
+    private static void AddParameter(DynamicParameters parameters, string name, DbType dbType, object? value) =>
+        parameters.Add(name, value ?? DBNull.Value, dbType);
 
-    private static FoodProduct Map(DbDataReader reader)
+    private sealed class FoodProductRow
     {
-        var descriptionOrdinal = reader.GetOrdinal("Description");
+        public int Id { get; set; }
 
-        return new FoodProduct
+        public string Name { get; set; } = string.Empty;
+
+        public string? Description { get; set; }
+
+        public string Category { get; set; } = string.Empty;
+
+        public decimal Price { get; set; }
+
+        public int CaloriesPerServing { get; set; }
+
+        public bool IsActive { get; set; }
+
+        public DateTimeOffset CreatedAt { get; set; }
+
+        public DateTimeOffset UpdatedAt { get; set; }
+
+        public FoodProduct ToFoodProduct() => new()
         {
-            Id = reader.GetInt32(reader.GetOrdinal("Id")),
-            Name = reader.GetString(reader.GetOrdinal("Name")),
-            Description = reader.IsDBNull(descriptionOrdinal) ? null : reader.GetString(descriptionOrdinal),
-            Category = reader.GetString(reader.GetOrdinal("Category")),
-            Price = reader.GetDecimal(reader.GetOrdinal("Price")),
-            CaloriesPerServing = reader.GetInt32(reader.GetOrdinal("CaloriesPerServing")),
-            IsActive = reader.GetBoolean(reader.GetOrdinal("IsActive")),
-            CreatedAt = reader.GetFieldValue<DateTimeOffset>(reader.GetOrdinal("CreatedAt")),
-            UpdatedAt = reader.GetFieldValue<DateTimeOffset>(reader.GetOrdinal("UpdatedAt")),
+            Id = Id,
+            Name = Name,
+            Description = Description,
+            Category = Category,
+            Price = Price,
+            CaloriesPerServing = CaloriesPerServing,
+            IsActive = IsActive,
+            CreatedAt = CreatedAt,
+            UpdatedAt = UpdatedAt,
         };
     }
 }
